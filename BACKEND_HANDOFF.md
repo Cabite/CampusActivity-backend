@@ -6,6 +6,7 @@ This fork implements the backend APIs for:
 - User/organizer registration
 - Activity registration management
 - Check-in code, manual check-in, and check-in records
+- Notifications and announcements
 
 ## Run Locally
 
@@ -61,6 +62,14 @@ Check-in:
 - `GET /api/checkin/my`
 - `GET /api/activities/{activity_id}/checkin-stats`
 
+Notifications and announcements:
+
+- `GET /api/notifications`
+- `PUT /api/notifications/{notification_id}/read`
+- `PUT /api/notifications/read-all`
+- `POST /api/admin/announcements`
+- `GET /api/announcements`
+
 ## Frontend Contract
 
 All protected APIs require:
@@ -83,5 +92,6 @@ All responses use:
 
 - `init_db.py` is now repeatable and also patches old SQLite databases with the new `activity.current_participants` and `registration.slot_release_at` columns.
 - Passwords are stored with Werkzeug hashes.
+- Registration, cancellation, rejection, and check-in actions create notification records.
 - The repository currently tracks `instance/campus_activity.db` and several `__pycache__` files from before this work. They should ideally be removed from Git tracking in a cleanup PR, but this implementation does not delete them automatically.
 - The local smoke test used activity ID `1`, which is created by `python init_db.py`.

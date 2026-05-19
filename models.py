@@ -139,5 +139,6 @@ class Notification(Base):
     title = Column(String(100), nullable=False)
     content = Column(Text, nullable=False)
     type = Column(String(30), nullable=False, index=True)  # registration_result/activity_audit_result/...
+    related_id = Column(Integer, nullable=True, index=True)
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now(), index=True)

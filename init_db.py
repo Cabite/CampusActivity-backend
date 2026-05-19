@@ -27,6 +27,8 @@ def migrate_existing_sqlite_schema():
         add_column_if_missing("activity", "current_participants", "current_participants INTEGER NOT NULL DEFAULT 0")
     if "registration" in tables:
         add_column_if_missing("registration", "slot_release_at", "slot_release_at DATETIME")
+    if "notification" in tables:
+        add_column_if_missing("notification", "related_id", "related_id INTEGER")
 
 
 def seed_categories(session):
@@ -118,8 +120,8 @@ def seed_demo_activity(session):
         return
 
     activity = session.query(Activity).filter(Activity.name == "AI Frontiers Lecture").first()
+    start = datetime.utcnow() + timedelta(minutes=10)
     if not activity:
-        start = datetime.utcnow() + timedelta(minutes=10)
         activity = Activity(
             organizer_id=organizer.id,
             category_id=101,
@@ -137,6 +139,12 @@ def seed_demo_activity(session):
         )
         session.add(activity)
         session.flush()
+    else:
+        activity.start_time = start
+        activity.end_time = start + timedelta(hours=3)
+        activity.registration_deadline = start - timedelta(minutes=5)
+        activity.cancel_deadline = start - timedelta(minutes=5)
+        activity.status = "open"
 
     row = session.query(Registration).filter(Registration.activity_id == activity.id, Registration.user_id == user.id).first()
     if not row:

@@ -8,6 +8,7 @@ from app.common.database import db_session
 from app.common.errors import ApiError
 from app.common.response import success
 from app.common.serializers import dt
+from app.services.notification_service import create_notification
 from models import Activity, Checkin, Registration, User
 
 bp = Blueprint("registrations", __name__, url_prefix="")
@@ -81,6 +82,24 @@ def register_activity():
 
         session.flush()
         refresh_participants(session, activity)
+        create_notification(
+            session,
+            "user",
+            request.current_user_id,
+            "Registration Success",
+            f"You have registered for {activity.name}.",
+            "registration_result",
+            activity.id,
+        )
+        create_notification(
+            session,
+            "organizer",
+            activity.organizer_id,
+            "New Registration",
+            f"A student registered for {activity.name}.",
+            "registration_result",
+            activity.id,
+        )
         return success(
             {
                 "registration_id": row.id,
@@ -113,6 +132,24 @@ def cancel_registration(activity_id):
         row.slot_release_at = release_time
         session.flush()
         refresh_participants(session, activity)
+        create_notification(
+            session,
+            "user",
+            request.current_user_id,
+            "Registration Cancelled",
+            f"You cancelled your registration for {activity.name}.",
+            "registration_result",
+            activity.id,
+        )
+        create_notification(
+            session,
+            "organizer",
+            activity.organizer_id,
+            "Registration Cancelled",
+            f"A student cancelled registration for {activity.name}.",
+            "registration_result",
+            activity.id,
+        )
         return success({"release_time": dt(release_time)}, message="取消报名成功，名额将在 2 分钟后释放")
 
 
@@ -244,6 +281,15 @@ def reject_registration(activity_id, user_id):
         row.status = "blocked" if row.reject_count >= 2 else "rejected"
         session.flush()
         refresh_participants(session, activity)
+        create_notification(
+            session,
+            "user",
+            user_id,
+            "Registration Rejected",
+            f"Your registration for {activity.name} was rejected. Reason: {reason}",
+            "registration_result",
+            activity.id,
+        )
         return success({"new_status": row.status, "reject_count": row.reject_count}, message="已拒绝该用户报名")
 
 

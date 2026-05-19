@@ -9,6 +9,7 @@ from app.common.database import db_session
 from app.common.errors import ApiError
 from app.common.response import success
 from app.common.serializers import dt
+from app.services.notification_service import create_notification
 from models import Activity, ActivityCheckinCode, Checkin, Registration, User
 
 bp = Blueprint("checkin", __name__, url_prefix="")
@@ -84,6 +85,15 @@ def code_checkin():
         row = Checkin(activity_id=activity.id, user_id=request.current_user_id, checkin_method="code")
         session.add(row)
         session.flush()
+        create_notification(
+            session,
+            "user",
+            request.current_user_id,
+            "Check-in Success",
+            f"You checked in for {activity.name}.",
+            "checkin_result",
+            activity.id,
+        )
         return success({"checkin_id": row.id, "checkin_time": dt(row.checkin_time)}, message="签到成功")
 
 
@@ -95,7 +105,7 @@ def manual_checkin(activity_id):
     if not student_id:
         raise ApiError("缺少学号")
     with db_session() as session:
-        ensure_activity_owner(session, activity_id)
+        activity = ensure_activity_owner(session, activity_id)
         user = session.query(User).filter(User.student_id == student_id, User.status == "active").first()
         if not user:
             raise ApiError("用户不存在", code=404, status_code=404)
@@ -107,6 +117,15 @@ def manual_checkin(activity_id):
         row = Checkin(activity_id=activity_id, user_id=user.id, checkin_method="manual", operator_id=request.current_user_id)
         session.add(row)
         session.flush()
+        create_notification(
+            session,
+            "user",
+            user.id,
+            "Manual Check-in Success",
+            f"Organizer completed manual check-in for {activity.name}.",
+            "checkin_result",
+            activity.id,
+        )
         return success({"user_id": user.id, "username": user.username, "checkin_time": dt(row.checkin_time)}, message="签到成功")
 
 
