@@ -14,7 +14,7 @@ Base = declarative_base()
 
 
 class Config:
-    SECRET_KEY = os.getenv('SECRET_KEY', 'campus-activity-dev-secret')
+    SECRET_KEY = os.getenv('SECRET_KEY', 'campus-activity-dev-secret-change-before-deploy')
     JSON_AS_ASCII = False
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL
 

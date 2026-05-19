@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config import Base
 
@@ -59,11 +60,14 @@ class Activity(Base):
     campus = Column(String(20), nullable=False, index=True)
     location = Column(String(100), nullable=False)
     max_participants = Column(Integer, nullable=False, default=1)
+    current_participants = Column(Integer, nullable=False, default=0)
     registration_deadline = Column(DateTime, nullable=False)
     cancel_deadline = Column(DateTime, nullable=False)
     description = Column(Text, nullable=False)
     status = Column(String(20), default='draft', index=True)  # draft/pending/rejected/edit_pending/open/ongoing/ended/removed
     reject_reason = Column(Text, nullable=True)
+    organizer = relationship("Organizer")
+    category = relationship("Category")
 
 class ActivityRevision(Base):
     __tablename__ = 'activity_revision'
@@ -92,6 +96,9 @@ class Registration(Base):
     reject_count = Column(Integer, default=0)
     last_reject_time = Column(DateTime, nullable=True)
     reject_reason = Column(Text, nullable=True)
+    slot_release_at = Column(DateTime, nullable=True)
+    activity = relationship("Activity")
+    user = relationship("User")
     __table_args__ = (UniqueConstraint('activity_id', 'user_id', name='uniq_activity_user'),)
 
 class Checkin(Base):
@@ -102,6 +109,8 @@ class Checkin(Base):
     checkin_time = Column(DateTime, default=func.now())
     checkin_method = Column(String(20), nullable=False)  # code/manual
     operator_id = Column(Integer, nullable=True)  # 组织者ID
+    activity = relationship("Activity")
+    user = relationship("User")
     __table_args__ = (UniqueConstraint('activity_id', 'user_id', name='uniq_checkin_activity_user'),)
 
 class ActivityCheckinCode(Base):
@@ -110,6 +119,7 @@ class ActivityCheckinCode(Base):
     activity_id = Column(Integer, ForeignKey('activity.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
     checkin_code = Column(String(6), nullable=False, unique=True, index=True)
     created_at = Column(DateTime, default=func.now())
+    activity = relationship("Activity")
 
 class Announcement(Base):
     __tablename__ = 'announcement'
