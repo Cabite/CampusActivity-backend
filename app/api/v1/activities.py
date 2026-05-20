@@ -1,0 +1,396 @@
+from datetime import datetime
+
+from flask import Blueprint, request
+
+from app.common.auth import decode_token, role_required
+from app.common.database import db_session
+from app.common.errors import ApiError
+from app.common.response import success
+from app.common.serializers import dt
+from app.services.notification_service import create_notification
+from models import Activity, Category, Organizer, Registration
+
+bp = Blueprint("activities", __name__, url_prefix="/activities")
+
+ACTIVE_STATUSES = ("registered", "re_registered")
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    raise ApiError("Invalid datetime format. Use YYYY-MM-DD HH:MM:SS.")
+
+
+def require_fields(data, fields):
+    missing = [field for field in fields if not str(data.get(field, "")).strip()]
+    if missing:
+        raise ApiError(f"缺少必填字段：{', '.join(missing)}")
+
+
+def optional_identity():
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None, None
+    payload = decode_token(header.replace("Bearer ", "", 1).strip())
+    return payload.get("role"), payload.get("user_id")
+
+
+def category_map(session):
+    categories = session.query(Category).all()
+    by_id = {row.id: row for row in categories}
+    return by_id
+
+
+def category_path(category_id, by_id):
+    names = []
+    current = by_id.get(category_id)
+    while current:
+        names.append(current.name)
+        current = by_id.get(current.parent_id)
+    return " > ".join(reversed(names))
+
+
+def normalized_payload(data):
+    require_fields(
+        data,
+        [
+            "name",
+            "category_id",
+            "start_time",
+            "end_time",
+            "campus",
+            "location",
+            "max_participants",
+            "registration_deadline",
+            "cancel_deadline",
+            "description",
+        ],
+    )
+
+    try:
+        category_id = int(data["category_id"])
+    except (TypeError, ValueError) as exc:
+        raise ApiError("分类ID无效") from exc
+
+    try:
+        max_participants = int(data["max_participants"])
+    except (TypeError, ValueError) as exc:
+        raise ApiError("人数上限无效") from exc
+
+    if max_participants <= 0:
+        raise ApiError("人数上限必须大于0")
+
+    start_time = parse_datetime(data.get("start_time"))
+    end_time = parse_datetime(data.get("end_time"))
+    registration_deadline = parse_datetime(data.get("registration_deadline"))
+    cancel_deadline = parse_datetime(data.get("cancel_deadline"))
+    if not start_time or not end_time:
+        raise ApiError("活动时间不能为空")
+    if end_time <= start_time:
+        raise ApiError("结束时间必须晚于开始时间")
+    if registration_deadline and registration_deadline > start_time:
+        raise ApiError("报名截止时间必须早于活动开始")
+    if cancel_deadline and cancel_deadline > start_time:
+        raise ApiError("取消截止时间必须早于活动开始")
+    if registration_deadline and cancel_deadline and cancel_deadline > registration_deadline:
+        raise ApiError("取消截止时间必须早于报名截止时间")
+
+    return {
+        "name": str(data["name"]).strip(),
+        "category_id": category_id,
+        "start_time": start_time,
+        "end_time": end_time,
+        "campus": str(data["campus"]).strip(),
+        "location": str(data["location"]).strip(),
+        "max_participants": max_participants,
+        "registration_deadline": registration_deadline,
+        "cancel_deadline": cancel_deadline,
+        "description": str(data["description"]).strip(),
+        "save_as_draft": bool(data.get("save_as_draft", False)),
+    }
+
+
+def apply_activity_fields(activity, payload):
+    activity.name = payload["name"]
+    activity.category_id = payload["category_id"]
+    activity.start_time = payload["start_time"]
+    activity.end_time = payload["end_time"]
+    activity.campus = payload["campus"]
+    activity.location = payload["location"]
+    activity.max_participants = payload["max_participants"]
+    activity.registration_deadline = payload["registration_deadline"]
+    activity.cancel_deadline = payload["cancel_deadline"]
+    activity.description = payload["description"]
+
+
+def updated_status(current_status, save_as_draft):
+    if save_as_draft:
+        return "draft" if current_status == "draft" else "edit_pending"
+    if current_status in ("draft", "rejected"):
+        return "pending"
+    return "edit_pending"
+
+
+@bp.post("")
+@role_required("organizer")
+def create_activity():
+    data = request.get_json(silent=True) or {}
+    payload = normalized_payload(data)
+
+    with db_session() as session:
+        if not session.get(Category, payload["category_id"]):
+            raise ApiError("活动分类不存在", code=404, status_code=404)
+
+        status = "draft" if payload["save_as_draft"] else "pending"
+        row = Activity(
+            organizer_id=request.current_user_id,
+            category_id=payload["category_id"],
+            name=payload["name"],
+            start_time=payload["start_time"],
+            end_time=payload["end_time"],
+            campus=payload["campus"],
+            location=payload["location"],
+            max_participants=payload["max_participants"],
+            registration_deadline=payload["registration_deadline"],
+            cancel_deadline=payload["cancel_deadline"],
+            description=payload["description"],
+            status=status,
+        )
+        session.add(row)
+        session.flush()
+        return success({"activity_id": row.id, "status": row.status}, message="活动创建成功")
+
+
+@bp.put("/<int:activity_id>/submit")
+@role_required("organizer")
+def submit_activity(activity_id):
+    with db_session() as session:
+        activity = session.get(Activity, activity_id)
+        if not activity:
+            raise ApiError("活动不存在", code=404, status_code=404)
+        if activity.organizer_id != request.current_user_id:
+            raise ApiError("无权管理该活动", code=403, status_code=403)
+        activity.status = "pending"
+        activity.reject_reason = None
+        return success({"activity_id": activity.id, "status": activity.status}, message="已提交审核")
+
+
+@bp.get("")
+def list_activities():
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
+
+    with db_session() as session:
+        query = session.query(Activity)
+
+        if keyword := str(request.args.get("keyword") or "").strip():
+            query = query.filter(Activity.name.contains(keyword))
+        if category_id := request.args.get("category_id"):
+            try:
+                query = query.filter(Activity.category_id == int(category_id))
+            except ValueError:
+                raise ApiError("分类ID无效")
+        if campus := str(request.args.get("campus") or "").strip():
+            query = query.filter(Activity.campus == campus)
+        if status := str(request.args.get("status") or "").strip():
+            query = query.filter(Activity.status == status)
+        else:
+            query = query.filter(Activity.status != "removed")
+        if organizer_id := request.args.get("organizer_id"):
+            try:
+                query = query.filter(Activity.organizer_id == int(organizer_id))
+            except ValueError:
+                raise ApiError("组织者ID无效")
+
+        total = query.count()
+        rows = (
+            query.order_by(Activity.start_time.desc(), Activity.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        categories = category_map(session)
+
+        return success(
+            {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "list": [
+                    {
+                        "activity_id": row.id,
+                        "name": row.name,
+                        "start_time": dt(row.start_time),
+                        "category_name": categories.get(row.category_id).name if categories.get(row.category_id) else None,
+                        "category_path": category_path(row.category_id, categories) if categories.get(row.category_id) else None,
+                        "location": row.location,
+                        "campus": row.campus,
+                        "current_participants": row.current_participants,
+                        "max_participants": row.max_participants,
+                        "status": row.status,
+                    }
+                    for row in rows
+                ],
+            }
+        )
+
+
+@bp.get("/my")
+@role_required("organizer")
+def my_activities():
+    return list_activities_for_organizer(request.current_user_id)
+
+
+def list_activities_for_organizer(organizer_id):
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
+
+    with db_session() as session:
+        query = session.query(Activity).filter(Activity.organizer_id == organizer_id)
+        if keyword := str(request.args.get("keyword") or "").strip():
+            query = query.filter(Activity.name.contains(keyword))
+        if category_id := request.args.get("category_id"):
+            try:
+                query = query.filter(Activity.category_id == int(category_id))
+            except ValueError:
+                raise ApiError("分类ID无效")
+        if campus := str(request.args.get("campus") or "").strip():
+            query = query.filter(Activity.campus == campus)
+        if status := str(request.args.get("status") or "").strip():
+            query = query.filter(Activity.status == status)
+
+        total = query.count()
+        rows = (
+            query.order_by(Activity.start_time.desc(), Activity.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        categories = category_map(session)
+        return success(
+            {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "list": [
+                    {
+                        "activity_id": row.id,
+                        "name": row.name,
+                        "start_time": dt(row.start_time),
+                        "category_name": categories.get(row.category_id).name if categories.get(row.category_id) else None,
+                        "category_path": category_path(row.category_id, categories) if categories.get(row.category_id) else None,
+                        "location": row.location,
+                        "campus": row.campus,
+                        "current_participants": row.current_participants,
+                        "max_participants": row.max_participants,
+                        "status": row.status,
+                    }
+                    for row in rows
+                ],
+            }
+        )
+
+
+@bp.get("/<int:activity_id>")
+def activity_detail(activity_id):
+    role, user_id = optional_identity()
+
+    with db_session() as session:
+        activity = session.get(Activity, activity_id)
+        if not activity or activity.status == "removed":
+            raise ApiError("活动不存在", code=404, status_code=404)
+
+        organizer = session.get(Organizer, activity.organizer_id)
+        categories = category_map(session)
+        registration = None
+        if role == "user" and user_id:
+            registration = (
+                session.query(Registration)
+                .filter(Registration.activity_id == activity_id, Registration.user_id == user_id)
+                .first()
+            )
+        registration_status = registration.status if registration else None
+        is_registered = bool(registration and registration.status in ACTIVE_STATUSES)
+
+        return success(
+            {
+                "activity_id": activity.id,
+                "organizer_id": activity.organizer_id,
+                "organizer_name": organizer.org_name if organizer else None,
+                "name": activity.name,
+                "category_id": activity.category_id,
+                "category_name": categories.get(activity.category_id).name if categories.get(activity.category_id) else None,
+                "category_path": category_path(activity.category_id, categories) if categories.get(activity.category_id) else None,
+                "start_time": dt(activity.start_time),
+                "end_time": dt(activity.end_time),
+                "campus": activity.campus,
+                "location": activity.location,
+                "max_participants": activity.max_participants,
+                "current_participants": activity.current_participants,
+                "registration_deadline": dt(activity.registration_deadline),
+                "cancel_deadline": dt(activity.cancel_deadline),
+                "description": activity.description,
+                "status": activity.status,
+                "reject_reason": activity.reject_reason,
+                "is_registered": is_registered,
+                "registration_status": registration_status,
+            }
+        )
+
+
+@bp.put("/<int:activity_id>")
+@role_required("organizer")
+def update_activity(activity_id):
+    data = request.get_json(silent=True) or {}
+    payload = normalized_payload(data)
+
+    with db_session() as session:
+        activity = session.get(Activity, activity_id)
+        if not activity:
+            raise ApiError("活动不存在", code=404, status_code=404)
+        if activity.organizer_id != request.current_user_id:
+            raise ApiError("无权管理该活动", code=403, status_code=403)
+        if not session.get(Category, payload["category_id"]):
+            raise ApiError("活动分类不存在", code=404, status_code=404)
+
+        apply_activity_fields(activity, payload)
+        activity.status = updated_status(activity.status, payload["save_as_draft"])
+        activity.reject_reason = None
+        session.flush()
+        return success({"activity_id": activity.id, "status": activity.status}, message="活动更新成功")
+
+
+@bp.delete("/<int:activity_id>")
+@role_required("organizer")
+def delete_activity(activity_id):
+    with db_session() as session:
+        activity = session.get(Activity, activity_id)
+        if not activity:
+            raise ApiError("活动不存在", code=404, status_code=404)
+        if activity.organizer_id != request.current_user_id:
+            raise ApiError("无权管理该活动", code=403, status_code=403)
+
+        activity.status = "removed"
+        session.flush()
+
+        rows = (
+            session.query(Registration)
+            .filter(Registration.activity_id == activity_id, Registration.status.in_(ACTIVE_STATUSES))
+            .all()
+        )
+        for row in rows:
+            create_notification(
+                session,
+                "user",
+                row.user_id,
+                "Activity Cancelled",
+                f"The activity {activity.name} was cancelled.",
+                "activity_audit_result",
+                activity.id,
+            )
+        return success(None, message="活动已删除，已通知所有报名用户")
