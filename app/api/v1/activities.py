@@ -32,6 +32,13 @@ def require_fields(data, fields):
         raise ApiError(f"缺少必填字段：{', '.join(missing)}")
 
 
+def list_statuses(value):
+    if not value:
+        return None
+    parts = [item.strip() for item in str(value).split(",") if item.strip()]
+    return parts or None
+
+
 def optional_identity():
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -213,8 +220,9 @@ def list_activities():
                 raise ApiError("分类ID无效") from exc
         if campus := str(request.args.get("campus") or "").strip():
             query = query.filter(Activity.campus == campus)
-        if status := str(request.args.get("status") or "").strip():
-            query = query.filter(Activity.status == status)
+        statuses = list_statuses(request.args.get("status"))
+        if statuses:
+            query = query.filter(Activity.status.in_(statuses))
         else:
             query = query.filter(Activity.status.in_(("open", "ongoing")))
         if organizer_id := request.args.get("organizer_id"):
@@ -222,6 +230,11 @@ def list_activities():
                 query = query.filter(Activity.organizer_id == int(organizer_id))
             except ValueError as exc:
                 raise ApiError("组织者ID无效") from exc
+        if start_date := request.args.get("start_date"):
+            start_time = parse_datetime(start_date)
+            if not start_time:
+                raise ApiError("start_date无效")
+            query = query.filter(Activity.start_time >= start_time)
 
         total = query.count()
         rows = (
@@ -260,8 +273,14 @@ def my_activities():
                 raise ApiError("分类ID无效") from exc
         if campus := str(request.args.get("campus") or "").strip():
             query = query.filter(Activity.campus == campus)
-        if status := str(request.args.get("status") or "").strip():
-            query = query.filter(Activity.status == status)
+        statuses = list_statuses(request.args.get("status"))
+        if statuses:
+            query = query.filter(Activity.status.in_(statuses))
+        if start_date := request.args.get("start_date"):
+            start_time = parse_datetime(start_date)
+            if not start_time:
+                raise ApiError("start_date无效")
+            query = query.filter(Activity.start_time >= start_time)
 
         total = query.count()
         rows = (

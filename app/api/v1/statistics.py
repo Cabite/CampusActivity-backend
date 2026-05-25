@@ -54,6 +54,20 @@ def parse_scope(scope, filter_value):
     return scope_value
 
 
+def resolve_scope_from_args():
+    college = str(request.args.get("college") or "").strip()
+    grade = str(request.args.get("grade") or "").strip()
+    if college:
+        return "college", college
+    if grade:
+        return "grade", grade
+    filter_value = str(request.args.get("filter_value") or "").strip()
+    scope_value = parse_scope(request.args.get("scope"), filter_value)
+    if scope_value == "global":
+        return scope_value, ""
+    return scope_value, filter_value
+
+
 @bp.get("/admin/statistics")
 @role_required("admin")
 def admin_statistics():
@@ -118,8 +132,7 @@ def admin_statistics():
 @role_required("user", "organizer", "admin")
 def user_ranking():
     period_start = parse_period(request.args.get("period"))
-    scope = parse_scope(request.args.get("scope"), request.args.get("filter_value"))
-    filter_value = str(request.args.get("filter_value") or "").strip()
+    scope, filter_value = resolve_scope_from_args()
     page, page_size = parse_page_args()
 
     with db_session() as session:
@@ -187,8 +200,7 @@ def leaderboard():
 
 def user_ranking_data(require_auth=True):
     period_start = parse_period(request.args.get("period"))
-    scope = parse_scope(request.args.get("scope"), request.args.get("filter_value"))
-    filter_value = str(request.args.get("filter_value") or "").strip()
+    scope, filter_value = resolve_scope_from_args()
     page, page_size = parse_page_args()
 
     with db_session() as session:
