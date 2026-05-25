@@ -87,18 +87,6 @@ def mark_notification_read(notification_id):
         return success(None, message="已标记为已读")
 
 
-@bp.put("/notifications/read-all")
-@role_required("user", "organizer", "admin")
-def mark_all_notifications_read():
-    with db_session() as session:
-        session.query(Notification).filter(
-            Notification.receiver_type == request.current_role,
-            Notification.receiver_id == request.current_user_id,
-            Notification.is_read.is_(False),
-        ).update({"is_read": True}, synchronize_session=False)
-        return success(None, message="全部已标记为已读")
-
-
 @bp.post("/admin/announcements")
 @role_required("admin")
 def create_announcement():
@@ -113,7 +101,7 @@ def create_announcement():
         raise ApiError("Announcement title must be 50 characters or fewer")
 
     start_time = parse_datetime(data.get("start_time")) or datetime.utcnow()
-    end_time = parse_datetime(data.get("expires_at") or data.get("end_time")) or (start_time + timedelta(days=30))
+    end_time = parse_datetime(data.get("end_time")) or (start_time + timedelta(days=30))
     if end_time <= start_time:
         raise ApiError("Announcement end time must be later than start time")
 
@@ -146,9 +134,20 @@ def list_announcements():
                     "announcement_id": row.id,
                     "title": row.title,
                     "content": row.content,
-                    "created_at": dt(row.created_at),
-                    "expires_at": dt(row.end_time),
+                    "start_time": dt(row.start_time),
+                    "end_time": dt(row.end_time),
                 }
                 for row in rows
             ]
         )
+
+
+@bp.delete("/admin/announcements/<int:announcement_id>")
+@role_required("admin")
+def delete_announcement(announcement_id):
+    with db_session() as session:
+        row = session.get(Announcement, announcement_id)
+        if not row:
+            raise ApiError("Announcement not found", code=404, status_code=404)
+        session.delete(row)
+        return success(None, message="公告已删除")

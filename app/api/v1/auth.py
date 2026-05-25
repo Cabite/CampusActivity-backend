@@ -58,7 +58,11 @@ def register_user():
         )
         session.add(user)
         session.flush()
-        return success({"user_id": user.id, "role": "user", "status": user.status}, message="注册成功")
+        token = create_token("user", user.id)
+        return success(
+            {"userId": user.id, "user_id": user.id, "role": "user", "status": user.status, "token": token},
+            message="注册成功，已自动登录",
+        )
 
 
 @bp.post("/register/organizer")
@@ -82,14 +86,16 @@ def register_organizer():
         )
         session.add(organizer)
         session.flush()
+        token = create_token("organizer", organizer.id)
         return success(
             {
                 "user_id": organizer.id,
                 "organizer_id": organizer.id,
                 "role": "organizer",
                 "status": organizer.status,
+                "token": token,
             },
-            message="注册成功",
+            message="注册成功，自动登录，请等待管理员审核",
         )
 
 

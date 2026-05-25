@@ -37,11 +37,12 @@ def remaining_slots(session, activity):
     return max(activity.max_participants - activity.current_participants, 0)
 
 
+@bp.post("/activities/<int:path_activity_id>/register")
 @bp.post("/registrations")
 @role_required("user")
-def register_activity():
+def register_activity(path_activity_id=None):
     data = request.get_json(silent=True) or {}
-    activity_id = data.get("activity_id")
+    activity_id = path_activity_id or data.get("activity_id")
     if not activity_id:
         raise ApiError("缺少活动ID")
 
@@ -110,6 +111,7 @@ def register_activity():
         )
 
 
+@bp.delete("/activities/<int:activity_id>/register")
 @bp.delete("/registrations/<int:activity_id>")
 @role_required("user")
 def cancel_registration(activity_id):
@@ -153,6 +155,7 @@ def cancel_registration(activity_id):
         return success({"release_time": dt(release_time)}, message="取消报名成功，名额将在 2 分钟后释放")
 
 
+@bp.get("/user/registrations")
 @bp.get("/registrations/my")
 @role_required("user")
 def my_registrations():
@@ -212,10 +215,11 @@ def filtered_registration_query(session, activity_id):
     return query
 
 
-def stats_for(rows, activity):
+def stats_for(rows, activity, total_checked=0):
     active_rows = [row for row in rows if row.status in ACTIVE_STATUSES]
     return {
         "total_registered": len(active_rows),
+        "total_checked": total_checked,
         "remaining_slots": max(activity.max_participants - len(active_rows), 0),
         "by_gender": dict(Counter(row.user.gender for row in active_rows)),
         "by_college": dict(Counter(row.user.college for row in active_rows)),
@@ -224,6 +228,7 @@ def stats_for(rows, activity):
     }
 
 
+@bp.get("/organizer/activities/<int:activity_id>/registrations")
 @bp.get("/activities/<int:activity_id>/registrations")
 @role_required("organizer", "admin")
 def activity_registrations(activity_id):
@@ -234,22 +239,28 @@ def activity_registrations(activity_id):
         query = filtered_registration_query(session, activity_id)
         total = query.count()
         all_rows = query.all()
+        active_user_ids = [row.user_id for row in all_rows if row.status in ACTIVE_STATUSES]
+        total_checked = (
+            session.query(Checkin)
+            .filter(Checkin.activity_id == activity_id, Checkin.user_id.in_(active_user_ids))
+            .count()
+            if active_user_ids
+            else 0
+        )
         rows = query.order_by(Registration.registration_time.desc()).offset((page - 1) * page_size).limit(page_size).all()
         return success(
             {
                 "total": total,
-                "statistics": stats_for(all_rows, activity),
+                "statistics": stats_for(all_rows, activity, total_checked=total_checked),
                 "list": [
                     {
                         "registration_id": row.id,
                         "user_id": row.user.id,
                         "student_id": row.user.student_id,
-                        "username": row.user.username,
                         "gender": row.user.gender,
                         "college": row.user.college,
                         "major": row.user.major,
                         "grade": row.user.grade,
-                        "phone": row.user.phone,
                         "registration_time": dt(row.registration_time),
                         "status": row.status,
                         "reject_reason": row.reject_reason,
@@ -263,6 +274,43 @@ def activity_registrations(activity_id):
         )
 
 
+def reject_registration_row(session, row, reason):
+    activity = ensure_activity_owner(session, row.activity_id)
+    if row.status not in ACTIVE_STATUSES:
+        raise ApiError("该用户没有有效报名记录")
+    row.reject_count += 1
+    row.last_reject_time = now()
+    row.reject_reason = reason
+    row.status = "blocked" if row.reject_count >= 2 else "rejected"
+    session.flush()
+    refresh_participants(session, activity)
+    create_notification(
+        session,
+        "user",
+        row.user_id,
+        "Registration Rejected",
+        f"Your registration for {activity.name} was rejected. Reason: {reason}",
+        "registration_result",
+        activity.id,
+    )
+    new_status = "re_rejected" if row.reject_count >= 2 else row.status
+    return success({"new_status": new_status, "reject_count": row.reject_count}, message="已拒绝该用户报名")
+
+
+@bp.post("/organizer/registrations/<int:registration_id>/reject")
+@role_required("organizer")
+def reject_registration_by_id(registration_id):
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason") or "").strip()
+    if not reason:
+        raise ApiError("请填写拒绝原因")
+    with db_session() as session:
+        row = session.get(Registration, registration_id)
+        if not row:
+            raise ApiError("报名记录不存在", code=404, status_code=404)
+        return reject_registration_row(session, row, reason)
+
+
 @bp.put("/activities/<int:activity_id>/registrations/<int:user_id>/reject")
 @role_required("organizer")
 def reject_registration(activity_id, user_id):
@@ -271,26 +319,10 @@ def reject_registration(activity_id, user_id):
     if not reason:
         raise ApiError("请填写拒绝原因")
     with db_session() as session:
-        activity = ensure_activity_owner(session, activity_id)
         row = session.query(Registration).filter(Registration.activity_id == activity_id, Registration.user_id == user_id).first()
-        if not row or row.status not in ACTIVE_STATUSES:
-            raise ApiError("该用户没有有效报名记录")
-        row.reject_count += 1
-        row.last_reject_time = now()
-        row.reject_reason = reason
-        row.status = "blocked" if row.reject_count >= 2 else "rejected"
-        session.flush()
-        refresh_participants(session, activity)
-        create_notification(
-            session,
-            "user",
-            user_id,
-            "Registration Rejected",
-            f"Your registration for {activity.name} was rejected. Reason: {reason}",
-            "registration_result",
-            activity.id,
-        )
-        return success({"new_status": row.status, "reject_count": row.reject_count}, message="已拒绝该用户报名")
+        if not row:
+            raise ApiError("报名记录不存在", code=404, status_code=404)
+        return reject_registration_row(session, row, reason)
 
 
 @bp.get("/activities/<int:activity_id>/registration-stats")
@@ -299,4 +331,12 @@ def registration_stats(activity_id):
     with db_session() as session:
         activity = ensure_activity_owner(session, activity_id)
         rows = session.query(Registration).filter(Registration.activity_id == activity_id).all()
-        return success(stats_for(rows, activity))
+        active_user_ids = [row.user_id for row in rows if row.status in ACTIVE_STATUSES]
+        total_checked = (
+            session.query(Checkin)
+            .filter(Checkin.activity_id == activity_id, Checkin.user_id.in_(active_user_ids))
+            .count()
+            if active_user_ids
+            else 0
+        )
+        return success(stats_for(rows, activity, total_checked=total_checked))
