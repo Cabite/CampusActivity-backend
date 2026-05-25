@@ -34,6 +34,7 @@ def random_code():
     return "".join(random.choice(alphabet) for _ in range(6))
 
 
+@bp.get("/organizer/activities/<int:activity_id>/checkin-code")
 @bp.get("/activities/<int:activity_id>/checkin-code")
 @role_required("organizer")
 def get_checkin_code(activity_id):
@@ -44,7 +45,7 @@ def get_checkin_code(activity_id):
             row = ActivityCheckinCode(activity_id=activity_id, checkin_code=random_code())
             session.add(row)
             session.flush()
-        return success({"checkin_code": row.checkin_code, "expires_at": dt(activity.end_time)})
+        return success({"checkin_code": row.checkin_code})
 
 
 def checkin_window_error(activity):
@@ -55,11 +56,12 @@ def checkin_window_error(activity):
     return None
 
 
+@bp.post("/activities/<int:path_activity_id>/checkin")
 @bp.post("/checkin")
 @role_required("user")
-def code_checkin():
+def code_checkin(path_activity_id=None):
     data = request.get_json(silent=True) or {}
-    activity_id = data.get("activity_id")
+    activity_id = path_activity_id or data.get("activity_id")
     checkin_code = str(data.get("checkin_code") or "").strip().upper()
     if not activity_id or not checkin_code:
         raise ApiError("缺少活动ID或签到码")
@@ -97,6 +99,7 @@ def code_checkin():
         return success({"checkin_id": row.id, "checkin_time": dt(row.checkin_time)}, message="签到成功")
 
 
+@bp.post("/organizer/activities/<int:activity_id>/manual-checkin")
 @bp.post("/activities/<int:activity_id>/manual-checkin")
 @role_required("organizer")
 def manual_checkin(activity_id):
@@ -126,9 +129,10 @@ def manual_checkin(activity_id):
             "checkin_result",
             activity.id,
         )
-        return success({"user_id": user.id, "username": user.username, "checkin_time": dt(row.checkin_time)}, message="签到成功")
+        return success({"user_id": user.id, "checkin_time": dt(row.checkin_time)}, message="签到成功")
 
 
+@bp.get("/user/checkins")
 @bp.get("/checkin/my")
 @role_required("user")
 def my_checkins():
@@ -157,6 +161,7 @@ def my_checkins():
         )
 
 
+@bp.get("/organizer/activities/<int:activity_id>/checkins")
 @bp.get("/activities/<int:activity_id>/checkin-stats")
 @role_required("organizer")
 def checkin_stats(activity_id):
@@ -174,6 +179,14 @@ def checkin_stats(activity_id):
             .order_by(Checkin.checkin_time.desc())
             .all()
         )
+        checked_user_ids = [row.user_id for row in rows]
+        not_checked_query = session.query(Registration).join(User, Registration.user_id == User.id).filter(
+            Registration.activity_id == activity_id,
+            Registration.status.in_(ACTIVE_STATUSES),
+        )
+        if checked_user_ids:
+            not_checked_query = not_checked_query.filter(~Registration.user_id.in_(checked_user_ids))
+        not_checked_rows = not_checked_query.order_by(Registration.registration_time.asc()).all()
         checked_in = len(rows)
         return success(
             {
@@ -190,6 +203,15 @@ def checkin_stats(activity_id):
                         "checkin_method": row.checkin_method,
                     }
                     for row in rows
+                ],
+                "notCheckedIn": [
+                    {
+                        "user_id": row.user.id,
+                        "student_id": row.user.student_id,
+                        "username": row.user.username,
+                        "registration_time": dt(row.registration_time),
+                    }
+                    for row in not_checked_rows
                 ],
             }
         )

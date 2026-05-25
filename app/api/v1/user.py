@@ -47,7 +47,6 @@ def profile():
                 "org_name": entity.org_name,
                 "avatar": entity.avatar,
                 "status": entity.status,
-                "reject_reason": entity.reject_reason,
                 "org_proof_text": entity.org_proof_text,
                 "org_proof_image": entity.org_proof_image,
             }
@@ -93,3 +92,32 @@ def delete_account():
             raise ApiError("超级管理员账号不可注销")
         entity.status = "deleted"
         return success(None, message="账号已注销")
+
+
+@bp.post("/avatar")
+@role_required("user", "organizer", "admin")
+def update_avatar():
+    data = request.get_json(silent=True) or {}
+    avatar = str(data.get("avatar") or data.get("avatar_url") or "").strip()
+    if not avatar:
+        raise ApiError("avatar is required")
+    with db_session() as session:
+        role, entity = current_entity(session)
+        entity.avatar = avatar
+        return success({"avatar_url": avatar}, message="头像更新成功")
+
+
+@bp.post("/reset-password")
+@role_required("user", "organizer", "admin")
+def reset_password():
+    data = request.get_json(silent=True) or {}
+    new_password = str(data.get("new_password") or "")
+    confirm_password = str(data.get("confirm_password") or "")
+    if not new_password:
+        raise ApiError("new_password is required")
+    if new_password != confirm_password:
+        raise ApiError("两次密码不一致")
+    with db_session() as session:
+        role, entity = current_entity(session)
+        entity.password = generate_password_hash(new_password)
+        return success(None, message="密码重置成功")
