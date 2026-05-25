@@ -8,11 +8,12 @@ from app.common.errors import ApiError
 from app.common.response import success
 from app.common.serializers import dt
 from app.services.notification_service import create_notification
-from models import Activity, Category, Checkin, Organizer, Registration
+from models import Activity, ActivityRevision, Category, Checkin, Organizer, Registration
 
 bp = Blueprint("activities", __name__, url_prefix="")
 
 ACTIVE_STATUSES = ("registered", "re_registered")
+EDITABLE_DIRECT_STATUSES = ("draft", "pending", "rejected")
 
 
 def parse_datetime(value):
@@ -132,20 +133,46 @@ def apply_activity_fields(activity, payload):
     activity.description = payload["description"]
 
 
-def activity_list_item(row, categories, include_status):
-    item = {
-        "activity_id": row.id,
+def apply_revision_fields(revision, payload):
+    revision.name = payload["name"]
+    revision.category_id = payload["category_id"]
+    revision.start_time = payload["start_time"]
+    revision.end_time = payload["end_time"]
+    revision.campus = payload["campus"]
+    revision.location = payload["location"]
+    revision.max_participants = payload["max_participants"]
+    revision.registration_deadline = payload["registration_deadline"]
+    revision.cancel_deadline = payload["cancel_deadline"]
+    revision.description = payload["description"]
+
+
+def get_revision(session, activity_id):
+    return session.query(ActivityRevision).filter(ActivityRevision.activity_id == activity_id).first()
+
+
+def activity_list_item(row, include_status):
+    return {
+        "activity_id": row.activity_id if hasattr(row, "activity_id") else row.id,
         "name": row.name,
         "start_time": dt(row.start_time),
-        "category_name": categories.get(row.category_id).name if categories.get(row.category_id) else None,
-        "category_path": category_path(row.category_id, categories) if categories.get(row.category_id) else None,
+        "category_id": row.category_id,
         "location": row.location,
         "campus": row.campus,
-        "current_participants": row.current_participants,
-        "max_participants": row.max_participants,
+        "max_participants": getattr(row, "max_participants", None),
+        "status": row.status if include_status and hasattr(row, "status") else None,
     }
+
+
+def enrich_activity_item(item, categories, activity, include_status):
+    category = categories.get(item["category_id"]) if item.get("category_id") else None
+    item["category_name"] = category.name if category else None
+    item["category_path"] = category_path(item["category_id"], categories) if category else None
+    item["current_participants"] = activity.current_participants
     if include_status:
-        item["status"] = row.status
+        item["status"] = activity.status
+    else:
+        item.pop("status", None)
+    item.pop("category_id", None)
     return item
 
 
@@ -198,7 +225,10 @@ def create_activity():
 def submit_activity(activity_id):
     with db_session() as session:
         activity = load_activity_for_organizer(session, activity_id)
-        activity.status = "edit_pending" if activity.status == "open" else "pending"
+        if activity.status in ("open", "ongoing", "edit_pending"):
+            activity.status = "edit_pending"
+        else:
+            activity.status = "pending"
         activity.reject_reason = None
         return success({"activity_id": activity.id, "status": activity.status}, message="已提交审核")
 
@@ -224,7 +254,7 @@ def list_activities():
         if statuses:
             query = query.filter(Activity.status.in_(statuses))
         else:
-            query = query.filter(Activity.status.in_(("open", "ongoing")))
+            query = query.filter(Activity.status.in_(("open", "ongoing", "edit_pending")))
         if organizer_id := request.args.get("organizer_id"):
             try:
                 query = query.filter(Activity.organizer_id == int(organizer_id))
@@ -245,14 +275,13 @@ def list_activities():
         )
         categories = category_map(session)
 
-        return success(
-            {
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-                "list": [activity_list_item(row, categories, include_status=False) for row in rows],
-            }
-        )
+        items = []
+        for row in rows:
+            item = activity_list_item(row, include_status=False)
+            item = enrich_activity_item(item, categories, row, include_status=False)
+            items.append(item)
+
+        return success({"total": total, "page": page, "page_size": page_size, "list": items})
 
 
 @bp.get("/organizer/activities")
@@ -290,14 +319,15 @@ def my_activities():
             .all()
         )
         categories = category_map(session)
-        return success(
-            {
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-                "list": [activity_list_item(row, categories, include_status=True) for row in rows],
-            }
-        )
+        items = []
+        for row in rows:
+            revision = get_revision(session, row.id) if row.status == "edit_pending" else None
+            source = revision or row
+            item = activity_list_item(source, include_status=True)
+            item = enrich_activity_item(item, categories, row, include_status=True)
+            items.append(item)
+
+        return success({"total": total, "page": page, "page_size": page_size, "list": items})
 
 
 @bp.get("/activities/<int:activity_id>")
@@ -311,6 +341,11 @@ def activity_detail(activity_id):
 
         organizer = session.get(Organizer, activity.organizer_id)
         categories = category_map(session)
+        revision = None
+        if activity.status == "edit_pending" and role in ("admin", "organizer"):
+            if role == "admin" or user_id == activity.organizer_id:
+                revision = get_revision(session, activity_id)
+        source = revision or activity
         registration = None
         checkin = None
         if role == "user" and user_id:
@@ -330,19 +365,19 @@ def activity_detail(activity_id):
                 "activity_id": activity.id,
                 "organizer_id": activity.organizer_id,
                 "organizer_name": organizer.org_name if organizer else None,
-                "name": activity.name,
-                "category_id": activity.category_id,
-                "category_name": categories.get(activity.category_id).name if categories.get(activity.category_id) else None,
-                "category_path": category_path(activity.category_id, categories) if categories.get(activity.category_id) else None,
-                "start_time": dt(activity.start_time),
-                "end_time": dt(activity.end_time),
-                "campus": activity.campus,
-                "location": activity.location,
-                "max_participants": activity.max_participants,
+                "name": source.name,
+                "category_id": source.category_id,
+                "category_name": categories.get(source.category_id).name if categories.get(source.category_id) else None,
+                "category_path": category_path(source.category_id, categories) if categories.get(source.category_id) else None,
+                "start_time": dt(source.start_time),
+                "end_time": dt(source.end_time),
+                "campus": source.campus,
+                "location": source.location,
+                "max_participants": source.max_participants,
                 "current_participants": activity.current_participants,
-                "registration_deadline": dt(activity.registration_deadline),
-                "cancel_deadline": dt(activity.cancel_deadline),
-                "description": activity.description,
+                "registration_deadline": dt(source.registration_deadline),
+                "cancel_deadline": dt(source.cancel_deadline),
+                "description": source.description,
                 "status": activity.status,
                 "is_registered": bool(registration and registration.status in ACTIVE_STATUSES),
                 "registration_status": registration.status if registration else None,
@@ -363,8 +398,29 @@ def update_activity(activity_id):
         if not session.get(Category, payload["category_id"]):
             raise ApiError("活动分类不存在", code=404, status_code=404)
 
-        apply_activity_fields(activity, payload)
-        activity.status = "edit_pending" if activity.status == "open" else "draft"
+        if activity.status in EDITABLE_DIRECT_STATUSES:
+            apply_activity_fields(activity, payload)
+        else:
+            revision = get_revision(session, activity.id)
+            if not revision:
+                revision = ActivityRevision(
+                    activity_id=activity.id,
+                    organizer_id=activity.organizer_id,
+                    category_id=payload["category_id"],
+                    name=payload["name"],
+                    start_time=payload["start_time"],
+                    end_time=payload["end_time"],
+                    campus=payload["campus"],
+                    location=payload["location"],
+                    max_participants=payload["max_participants"],
+                    registration_deadline=payload["registration_deadline"],
+                    cancel_deadline=payload["cancel_deadline"],
+                    description=payload["description"],
+                )
+                session.add(revision)
+            else:
+                apply_revision_fields(revision, payload)
+            activity.status = "edit_pending"
         activity.reject_reason = None
         session.flush()
         return success({"activity_id": activity.id, "status": activity.status}, message="活动更新成功")
@@ -377,6 +433,9 @@ def delete_activity(activity_id):
     with db_session() as session:
         activity = load_activity_for_organizer(session, activity_id)
         activity.status = "removed"
+        revision = get_revision(session, activity_id)
+        if revision:
+            session.delete(revision)
         session.flush()
 
         rows = (

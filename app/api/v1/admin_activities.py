@@ -8,7 +8,7 @@ from app.common.errors import ApiError
 from app.common.response import success
 from app.common.serializers import dt
 from app.services.notification_service import create_notification
-from models import Activity, Category, Organizer, Registration
+from models import Activity, ActivityRevision, Category, Organizer, Registration
 
 bp = Blueprint("admin_activities", __name__, url_prefix="/admin/activities")
 
@@ -35,6 +35,32 @@ def category_path(category_id, by_id):
         names.append(current.name)
         current = by_id.get(current.parent_id)
     return " > ".join(reversed(names))
+
+
+def get_revision(session, activity_id):
+    return session.query(ActivityRevision).filter(ActivityRevision.activity_id == activity_id).first()
+
+
+def apply_revision_to_activity(activity, revision):
+    activity.name = revision.name
+    activity.category_id = revision.category_id
+    activity.start_time = revision.start_time
+    activity.end_time = revision.end_time
+    activity.campus = revision.campus
+    activity.location = revision.location
+    activity.max_participants = revision.max_participants
+    activity.registration_deadline = revision.registration_deadline
+    activity.cancel_deadline = revision.cancel_deadline
+    activity.description = revision.description
+
+
+def compute_activity_status(activity):
+    now = datetime.utcnow()
+    if activity.end_time and now > activity.end_time:
+        return "ended"
+    if activity.start_time and activity.start_time <= now <= activity.end_time:
+        return "ongoing"
+    return "open"
 
 
 @bp.get("")
@@ -83,30 +109,25 @@ def list_review_activities():
 
         categories = category_map(session)
 
-        return success(
-            {
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-                "list": [
-                    {
-                        "activity_id": activity.id,
-                        "name": activity.name,
-                        "organizer_id": organizer.id,
-                        "organizer_name": organizer.org_name,
-                        "start_time": dt(activity.start_time),
-                        "category_name": categories.get(activity.category_id).name
-                        if categories.get(activity.category_id)
-                        else None,
-                        "category_path": category_path(activity.category_id, categories)
-                        if categories.get(activity.category_id)
-                        else None,
-                        "status": activity.status,
-                    }
-                    for activity, organizer in rows
-                ],
-            }
-        )
+        items = []
+        for activity, organizer in rows:
+            revision = get_revision(session, activity.id) if activity.status == "edit_pending" else None
+            source = revision or activity
+            category = categories.get(source.category_id) if source.category_id else None
+            items.append(
+                {
+                    "activity_id": activity.id,
+                    "name": source.name,
+                    "organizer_id": organizer.id,
+                    "organizer_name": organizer.org_name,
+                    "start_time": dt(source.start_time),
+                    "category_name": category.name if category else None,
+                    "category_path": category_path(source.category_id, categories) if category else None,
+                    "status": activity.status,
+                }
+            )
+
+        return success({"total": total, "page": page, "page_size": page_size, "list": items})
 
 
 @bp.put("/<int:activity_id>/review")
@@ -129,16 +150,32 @@ def review_activity(activity_id):
             raise ApiError("当前活动状态不可审核")
 
         if action == "approve":
-            activity.status = "open"
+            if activity.status == "edit_pending":
+                revision = get_revision(session, activity.id)
+                if revision:
+                    apply_revision_to_activity(activity, revision)
+                    session.delete(revision)
+                activity.status = compute_activity_status(activity)
+            else:
+                activity.status = "open"
             activity.reject_reason = None
             message = "审核通过"
-            new_status = "open"
+            new_status = activity.status
             notice_content = f"Your activity {activity.name} was approved."
         else:
-            activity.status = "rejected"
-            activity.reject_reason = reject_reason
-            message = "审核拒绝"
-            new_status = "rejected"
+            if activity.status == "edit_pending":
+                revision = get_revision(session, activity.id)
+                if revision:
+                    session.delete(revision)
+                activity.status = compute_activity_status(activity)
+                activity.reject_reason = reject_reason
+                message = "审核拒绝"
+                new_status = activity.status
+            else:
+                activity.status = "rejected"
+                activity.reject_reason = reject_reason
+                message = "审核拒绝"
+                new_status = "rejected"
             notice_content = f"Your activity {activity.name} was rejected. Reason: {reject_reason}"
 
         create_notification(
