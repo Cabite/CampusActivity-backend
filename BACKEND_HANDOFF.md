@@ -42,7 +42,7 @@ Created by `python init_db.py`:
 Auth and user:
 
 - `POST /auth/register/user`: returns `userId`, `user_id`, `role`, `status`, and `token`
-- `POST /auth/register/organizer`: returns `user_id`, `organizer_id`, `role`, `status`, and `token`
+- `POST /auth/register/organizer`: returns `userId`, `organizer_id`, `role`, and `token`
 - `POST /auth/login`
 - `POST /auth/logout`
 - `GET /user/profile`

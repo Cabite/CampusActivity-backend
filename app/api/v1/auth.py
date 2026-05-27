@@ -98,10 +98,9 @@ def register_organizer():
         token = create_token("organizer", organizer.id)
         return success(
             {
-                "user_id": organizer.id,
+                "userId": organizer.id,
                 "organizer_id": organizer.id,
                 "role": "organizer",
-                "status": organizer.status,
                 "token": token,
             },
             message="注册成功，自动登录，请等待管理员审核",
