@@ -6,3 +6,4 @@ venv/
 instance/
 *.db
 .env
+前后端接口文档.md
