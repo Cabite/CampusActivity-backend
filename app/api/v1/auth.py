@@ -23,6 +23,15 @@ def require_fields(data, fields):
         raise ApiError(f"缺少必填字段：{', '.join(missing)}")
 
 
+def normalize_optional_phone(value):
+    phone = str(value or "").strip()
+    if not phone:
+        return None
+    if not re.fullmatch(r"1\d{10}", phone):
+        raise ApiError("手机号须为11位")
+    return phone
+
+
 @bp.post("/register/user")
 def register_user():
     data = payload()
@@ -53,7 +62,7 @@ def register_user():
             college=str(data["college"]).strip(),
             major=str(data["major"]).strip(),
             grade=str(data["grade"]).strip(),
-            phone=str(data.get("phone") or "").strip() or None,
+            phone=normalize_optional_phone(data.get("phone")),
             status="active",
         )
         session.add(user)

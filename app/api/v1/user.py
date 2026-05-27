@@ -1,3 +1,5 @@
+import re
+
 from flask import Blueprint, request
 from werkzeug.security import generate_password_hash
 
@@ -41,6 +43,13 @@ def normalize_optional_text(value):
         return None
     value = str(value).strip()
     return value or None
+
+
+def normalize_optional_phone(value):
+    phone = normalize_optional_text(value)
+    if phone is not None and not re.fullmatch(r"1\d{10}", phone):
+        raise ApiError("手机号须为11位")
+    return phone
 
 
 def require_non_empty_text(data, field):
@@ -104,7 +113,7 @@ def update_profile():
                 if field in data:
                     setattr(entity, field, require_non_empty_text(data, field))
             if "phone" in data:
-                entity.phone = normalize_optional_text(data.get("phone"))
+                entity.phone = normalize_optional_phone(data.get("phone"))
             if "avatar" in data:
                 entity.avatar = normalize_optional_text(data.get("avatar"))
         else:
