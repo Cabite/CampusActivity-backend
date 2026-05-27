@@ -1,6 +1,9 @@
 import re
+from pathlib import Path
+from uuid import uuid4
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request, url_for
+from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash
 
 from app.common.auth import role_required
@@ -10,6 +13,10 @@ from app.common.response import success
 from models import Admin, Checkin, Organizer, User
 
 bp = Blueprint("user", __name__, url_prefix="/user")
+
+AVATAR_MAX_SIZE = 2 * 1024 * 1024
+AVATAR_ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
+AVATAR_ALLOWED_MIMETYPES = {"image/jpeg", "image/png"}
 
 ACHIEVEMENT_LEVELS = [
     {"title": "初级探索者", "required_count": 5},
@@ -57,6 +64,38 @@ def require_non_empty_text(data, field):
     if not value:
         raise ApiError(f"{field}不能为空")
     return value
+
+
+def avatar_upload_dir():
+    root = Path(current_app.root_path) / "static" / "avatars"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def validate_avatar_file(file_storage):
+    if not file_storage or not file_storage.filename:
+        raise ApiError("请上传头像文件")
+    filename = secure_filename(file_storage.filename)
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in AVATAR_ALLOWED_EXTENSIONS or file_storage.mimetype not in AVATAR_ALLOWED_MIMETYPES:
+        raise ApiError("头像仅支持jpg/png格式")
+
+    stream = file_storage.stream
+    current_position = stream.tell()
+    stream.seek(0, 2)
+    size = stream.tell()
+    stream.seek(current_position)
+    if size > AVATAR_MAX_SIZE:
+        raise ApiError("头像文件不能超过2MB")
+    return extension
+
+
+def save_avatar_file(file_storage, role, user_id):
+    extension = validate_avatar_file(file_storage)
+    filename = f"{role}_{user_id}_{uuid4().hex}.{extension}"
+    target = avatar_upload_dir() / filename
+    file_storage.save(target)
+    return url_for("static", filename=f"avatars/{filename}", _external=False)
 
 
 @bp.get("/profile")
@@ -141,12 +180,16 @@ def delete_account():
 @bp.post("/avatar")
 @role_required("user", "organizer", "admin")
 def update_avatar():
-    data = request.get_json(silent=True) or {}
-    avatar = str(data.get("avatar") or data.get("avatar_url") or "").strip()
-    if not avatar:
-        raise ApiError("avatar is required")
     with db_session() as session:
         role, entity = current_entity(session)
+        file_storage = request.files.get("avatar")
+        if file_storage:
+            avatar = save_avatar_file(file_storage, role, entity.id)
+        else:
+            data = request.get_json(silent=True) or {}
+            avatar = str(data.get("avatar") or data.get("avatar_url") or "").strip()
+            if not avatar:
+                raise ApiError("请上传头像文件")
         entity.avatar = avatar
         return success({"avatar_url": avatar}, message="头像更新成功")
 

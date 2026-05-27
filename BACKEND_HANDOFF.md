@@ -47,7 +47,7 @@ Auth and user:
 - `POST /auth/logout`
 - `GET /user/profile`
 - `PUT /user/profile`
-- `POST /user/avatar`
+- `POST /user/avatar`: multipart form upload, field `avatar`, jpg/png only, max 2MB, returns `avatar_url`
 - `POST /user/reset-password`
 - `DELETE /user/account`
 

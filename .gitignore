@@ -5,4 +5,5 @@ __pycache__/
 venv/
 instance/
 *.db
+app/static/avatars/
 .env
