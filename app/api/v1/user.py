@@ -5,9 +5,15 @@ from app.common.auth import role_required
 from app.common.database import db_session
 from app.common.errors import ApiError
 from app.common.response import success
-from models import Admin, Organizer, User
+from models import Admin, Checkin, Organizer, User
 
 bp = Blueprint("user", __name__, url_prefix="/user")
+
+ACHIEVEMENT_LEVELS = [
+    {"title": "初级探索者", "required_count": 5},
+    {"title": "中级探索者", "required_count": 20},
+    {"title": "高级探索者", "required_count": 30},
+]
 
 
 def current_entity(session):
@@ -20,12 +26,37 @@ def current_entity(session):
     return role, entity
 
 
+def achievement_for_count(effective_count):
+    title = "无"
+    for level in ACHIEVEMENT_LEVELS:
+        if effective_count >= level["required_count"]:
+            title = level["title"]
+        else:
+            break
+    return {"title": title, "effective_participation_count": effective_count}
+
+
+def normalize_optional_text(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def require_non_empty_text(data, field):
+    value = str(data.get(field) or "").strip()
+    if not value:
+        raise ApiError(f"{field}不能为空")
+    return value
+
+
 @bp.get("/profile")
 @role_required("user", "organizer", "admin")
 def profile():
     with db_session() as session:
         role, entity = current_entity(session)
         if role == "user":
+            effective_count = session.query(Checkin).filter(Checkin.user_id == entity.id).count()
             data = {
                 "user_id": entity.id,
                 "student_id": entity.student_id,
@@ -38,7 +69,7 @@ def profile():
                 "grade": entity.grade,
                 "phone": entity.phone,
                 "status": entity.status,
-                "achievement": {"title": "初级探索者", "effective_participation_count": 0},
+                "achievement": achievement_for_count(effective_count),
             }
         elif role == "organizer":
             data = {
@@ -69,12 +100,16 @@ def update_profile():
     with db_session() as session:
         role, entity = current_entity(session)
         if role == "user":
-            for field in ["username", "gender", "college", "major", "grade", "phone", "avatar"]:
+            for field in ["username", "gender", "college", "major", "grade"]:
                 if field in data:
-                    setattr(entity, field, str(data[field]).strip() or None)
+                    setattr(entity, field, require_non_empty_text(data, field))
+            if "phone" in data:
+                entity.phone = normalize_optional_text(data.get("phone"))
+            if "avatar" in data:
+                entity.avatar = normalize_optional_text(data.get("avatar"))
         else:
             if "avatar" in data:
-                entity.avatar = str(data["avatar"]).strip() or None
+                entity.avatar = normalize_optional_text(data.get("avatar"))
             if data.get("password"):
                 entity.password = generate_password_hash(str(data["password"]))
         return success(None, message="更新成功")
