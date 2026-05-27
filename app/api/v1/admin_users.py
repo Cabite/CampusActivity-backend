@@ -154,7 +154,6 @@ def get_organizer_detail(organizer_id):
                 "org_name": organizer.org_name,
                 "org_proof_text": organizer.org_proof_text,
                 "org_proof_image": organizer.org_proof_image,
-                "submitted_at": None,
                 "status": organizer.status,
                 "avatar": organizer.avatar,
                 "reject_reason": organizer.reject_reason or "",
@@ -248,7 +247,6 @@ def list_admins():
                     "username": row.username,
                     "role": row.role,
                     "status": row.status,
-                    "created_at": None,
                 }
                 for row in rows
             ]

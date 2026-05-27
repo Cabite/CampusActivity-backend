@@ -7,3 +7,4 @@ instance/
 *.db
 app/static/avatars/
 .env
+前后端接口文档.md
