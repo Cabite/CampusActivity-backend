@@ -278,7 +278,7 @@ def user_achievement():
         effective_count = len(checkins)
 
         achievements = []
-        current_title = None
+        current_title = "无"
         next_title = None
         next_required = None
 
@@ -303,7 +303,7 @@ def user_achievement():
 
         return success(
             {
-                "current_title": current_title or ACHIEVEMENT_LEVELS[0]["title"],
+                "current_title": current_title,
                 "effective_participation_count": effective_count,
                 "next_title": next_title,
                 "next_required": next_required,
